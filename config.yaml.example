@@ -1,0 +1,79 @@
+# ============================================================
+# LOL Auto Highlight Video Creator - Configuration
+# このファイルを config.yaml にコピーして設定してください
+# ============================================================
+
+riot:
+  api_key: "RGAPI-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"  # https://developer.riotgames.com/
+  region: "jp1"           # JP1サーバー
+  routing: "asia"         # Match APIのルーティング (asia / americas / europe)
+
+lol:
+  # LoLクライアントのインストールパス
+  install_path: "C:/Riot Games/League of Legends"
+  game_exe: "C:/Riot Games/League of Legends/Game/League of Legends.exe"
+  # リプレイ保存先 (通常はドキュメント内)
+  replay_folder: "C:/Users/{USERNAME}/Documents/League of Legends/Replays"
+  # スペクテイターサーバー (JP1)
+  spectator_host: "spectator-consumer.jp01.lol.pvp.net"
+  spectator_port: 8088
+
+recording:
+  output_width: 1920
+  output_height: 1080
+  fps: 60
+  # ハイライト前後のバッファ秒数
+  pre_highlight_buffer: 8   # ハイライト8秒前から録画
+  post_highlight_buffer: 5  # ハイライト5秒後まで録画
+
+highlight:
+  # ハイライトとして検出するイベント
+  include_pentakills: true
+  include_quadrakills: true
+  include_triplekills: true    # false にすると容量削減
+  include_baron: true
+  include_dragon: true
+  include_inhibitor: true
+  include_first_blood: true
+  # チームファイト検出: N秒以内にM人以上キル
+  teamfight_kill_count: 3
+  teamfight_time_window: 15   # 秒
+
+video:
+  output_dir: "output/videos"
+  thumbnail_dir: "output/thumbnails"
+  # 動画の最大長(分) - これを超えるとハイライトを間引く
+  max_duration_minutes: 12
+  # フォント設定 (Windowsフォント名)
+  font: "C:/Windows/Fonts/meiryo.ttc"  # 日本語フォント
+  # オープニング・エンディング秒数
+  intro_duration: 3
+  outro_duration: 3
+
+youtube:
+  # OAuth認証情報 (Google Cloud Consoleで取得)
+  client_secrets_file: "credentials/youtube_client_secret.json"
+  token_file: "credentials/youtube_token.json"
+  # アップロード設定
+  privacy_status: "public"     # public / unlisted / private
+  category_id: "20"            # 20 = Gaming
+  # タイトルテンプレート (利用可能変数: {champion}, {event}, {rank}, {date})
+  title_template: "【LOL】{rank} {champion} {event}ハイライト - JP{date}"
+  # タグ
+  tags:
+    - "リーグオブレジェンド"
+    - "LoL"
+    - "League of Legends"
+    - "ハイライト"
+    - "日本サーバー"
+    - "JP"
+
+crawler:
+  # 対象ランク帯 (CHALLENGER / GRANDMASTER / MASTER)
+  target_tiers:
+    - "CHALLENGER"
+    - "GRANDMASTER"
+  # 何時間おきに新しい試合を探すか
+  check_interval_minutes: 5
+  # 同じ試合を複数回処理しないためのキャッシュ
+  processed_games_cache: "cache/processed_games.json"

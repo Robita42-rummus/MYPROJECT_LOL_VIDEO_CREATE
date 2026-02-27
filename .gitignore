@@ -1,0 +1,30 @@
+# ===== 機密情報 =====
+# APIキー含む (config.yaml.example を使う)
+config.yaml
+credentials/youtube_client_secret.json
+credentials/youtube_token.json
+
+# ===== 大容量ファイル =====
+output/videos/
+output/thumbnails/
+
+# ===== 一時・生成ファイル =====
+__pycache__/
+*.pyc
+*.pyo
+logs/
+null
+myrequest.md
+
+# ===== キャッシュ =====
+cache/
+
+# ===== Claude 設定 =====
+.claude/
+
+# ===== Python =====
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
