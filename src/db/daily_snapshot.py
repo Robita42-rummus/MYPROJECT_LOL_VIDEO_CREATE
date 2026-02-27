@@ -152,4 +152,26 @@ def save_players(api_key: str, roles_cache: dict, date: Optional[str] = None) ->
             })
 
     logger.info(f"[日次] プレイヤーリスト: {path.name} ({len(entries)} 人)")
+
+    # player_roles.json の game_name が空のエントリを更新
+    import json as _json
+    _roles_path = Path("cache/player_roles.json")
+    if _roles_path.exists():
+        roles = _json.loads(_roles_path.read_text(encoding="utf-8"))
+        updated = False
+        for e in entries:
+            puuid = e["puuid"]
+            if puuid in roles and not roles[puuid].get("game_name"):
+                full_name = names.get(puuid, "")
+                if "#" in full_name:
+                    gn, tag = full_name.split("#", 1)
+                    roles[puuid]["game_name"] = gn
+                    roles[puuid]["tag"] = tag
+                    updated = True
+        if updated:
+            _roles_path.write_text(
+                _json.dumps(roles, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            logger.info("[日次] player_roles.json 名前キャッシュ更新完了")
+
     return path

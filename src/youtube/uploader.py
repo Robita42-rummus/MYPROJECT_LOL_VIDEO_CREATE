@@ -179,6 +179,15 @@ class YouTubeUploader:
         logger.info(f"YouTube アップロード開始: {title}")
         logger.info(f"  ファイル: {video_path} ({video_path.stat().st_size // 1024 // 1024}MB)")
 
+        # クォータ残量チェック
+        try:
+            from src.youtube.quota_tracker import can_upload, record_upload, log_status
+            if not can_upload():
+                log_status()
+                return None
+        except ImportError:
+            pass
+
         try:
             youtube = self._get_youtube()
             media = MediaFileUpload(
@@ -206,14 +215,28 @@ class YouTubeUploader:
             url = f"https://www.youtube.com/watch?v={video_id}"
             logger.info(f"アップロード完了: {url}")
 
+            # クォータ消費を記録
+            has_thumb = thumbnail_path is not None and thumbnail_path.exists()
+            try:
+                record_upload(with_thumbnail=has_thumb)
+            except Exception:
+                pass
+
             # サムネイル設定
-            if thumbnail_path and thumbnail_path.exists():
+            if has_thumb:
                 self._set_thumbnail(youtube, video_id, thumbnail_path)
 
             return url
 
         except Exception as e:
-            logger.error(f"YouTube アップロード失敗: {e}")
+            err = str(e)
+            if "quotaExceeded" in err or "uploadLimitExceeded" in err:
+                logger.warning(
+                    f"YouTube クォータ上限に達しました。"
+                    f"翌朝 9:00 JST 以降に再実行してください。"
+                )
+            else:
+                logger.error(f"YouTube アップロード失敗: {e}")
             return None
 
     def _set_thumbnail(self, youtube, video_id: str, thumbnail_path: Path):

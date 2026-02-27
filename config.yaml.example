@@ -68,6 +68,11 @@ youtube:
     - "日本サーバー"
     - "JP"
 
+obs:
+  host: "localhost"
+  port: 4455
+  password: "ここにOBS WebSocketパスワードを入力"  # OBS → ツール → WebSocketサーバー設定
+
 crawler:
   # 対象ランク帯 (CHALLENGER / GRANDMASTER / MASTER)
   target_tiers:

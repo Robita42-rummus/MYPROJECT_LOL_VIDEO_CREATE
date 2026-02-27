@@ -64,11 +64,11 @@ BASE_THRESHOLD_RED  = 11500  # x > this AND z > this → レッドベース
 SCOREBOARD_DURATION = 12.0   # スコアボード表示秒数
 SCOREBOARD_COOLDOWN = 60.0   # 再表示までの最短インターバル (秒)
 
-# OBS WebSocket 設定
-# OBS → ツール → WebSocket サーバー設定 → 有効化 が必要
+# OBS WebSocket 設定は config.yaml の obs セクションから読み込む
+# (run() 内で設定される。デフォルト値はフォールバック用)
 OBS_HOST     = "localhost"
 OBS_PORT     = 4455
-OBS_PASSWORD = "BzcENdiYpJEJXOkb"
+OBS_PASSWORD = ""
 
 
 # -----------------------------------------------
@@ -564,6 +564,13 @@ def run(max_matches: int = MAX_MATCHES, on_recorded=None, interactive: bool = Fa
 
     with open("config.yaml", encoding="utf-8") as f:
         config = yaml.safe_load(f)
+
+    # OBS 設定を config から読み込む (モジュールレベルのデフォルト値を上書き)
+    global OBS_HOST, OBS_PORT, OBS_PASSWORD
+    obs_cfg = config.get("obs", {})
+    OBS_HOST     = obs_cfg.get("host", OBS_HOST)
+    OBS_PORT     = int(obs_cfg.get("port", OBS_PORT))
+    OBS_PASSWORD = obs_cfg.get("password", OBS_PASSWORD)
 
     riot_client = RiotAPIClient(config["riot"]["api_key"])
     lcu         = LCUClient(config["lol"]["install_path"])

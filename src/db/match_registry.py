@@ -1,16 +1,23 @@
 """
-試合リストを CSV で管理するモジュール
+試合リストを SQLite で管理するモジュール
 
-output/match_list.csv に全試合の情報を記録する。
-record_matches.py と upload_video.py から呼び出される。
+output/lol_matches.db  ← メインストレージ (SQLite)
+output/match_list.csv  ← 自動エクスポート (Excel で閲覧用)
+
+外部API (呼び出し元のコードは変更不要):
+  upsert(), bulk_upsert_candidates(), update_youtube_url(),
+  update_video_filename(), get_row(), get_all()
 """
 from __future__ import annotations
 
 import csv
+import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+DB_PATH       = Path("output/lol_matches.db")
 REGISTRY_PATH = Path("output/match_list.csv")
 
 COLUMNS = [
@@ -31,51 +38,154 @@ COLUMNS = [
     "video_mb",
     "video_filename",
     "youtube_url",
+    "status",
 ]
 
+# CSV エクスポート用カラム (status は除く — 後方互換)
+CSV_COLUMNS = [c for c in COLUMNS if c != "status"]
 
-def _load() -> dict[str, dict]:
-    """CSVを読み込み {game_id: row_dict} を返す"""
-    rows = {}
+_CREATE_SQL = """
+CREATE TABLE IF NOT EXISTS matches (
+    game_id        TEXT PRIMARY KEY,
+    match_id       TEXT    DEFAULT '',
+    recorded_at    TEXT    DEFAULT '',
+    champion       TEXT    DEFAULT '',
+    player         TEXT    DEFAULT '',
+    rank           TEXT    DEFAULT '',
+    kills          TEXT    DEFAULT '',
+    deaths         TEXT    DEFAULT '',
+    assists        TEXT    DEFAULT '',
+    cs             TEXT    DEFAULT '',
+    vision         TEXT    DEFAULT '',
+    gold           TEXT    DEFAULT '',
+    patch          TEXT    DEFAULT '',
+    game_date      TEXT    DEFAULT '',
+    video_mb       TEXT    DEFAULT '',
+    video_filename TEXT    DEFAULT '',
+    youtube_url    TEXT    DEFAULT '',
+    status         TEXT    DEFAULT 'discovered'
+)
+"""
+
+
+# -----------------------------------------------
+# 接続・初期化
+# -----------------------------------------------
+
+@contextmanager
+def _conn():
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(str(DB_PATH), timeout=10)
+    con.row_factory = sqlite3.Row
+    try:
+        con.execute(_CREATE_SQL)
+        con.commit()
+        yield con
+    finally:
+        con.close()
+
+
+def _row_to_dict(row: sqlite3.Row) -> dict:
+    return {k: (row[k] or "") for k in row.keys()}
+
+
+# -----------------------------------------------
+# CSV エクスポート (書き込みのたびに再生成)
+# -----------------------------------------------
+
+def _export_csv(rows: list[dict]) -> None:
+    REGISTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(REGISTRY_PATH, "w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({col: row.get(col, "") for col in CSV_COLUMNS})
+
+
+# -----------------------------------------------
+# CSV → SQLite 移行 (初回のみ)
+# -----------------------------------------------
+
+def _migrate_from_csv() -> None:
+    """既存の match_list.csv をSQLiteに移行する (DB未存在時のみ実行)"""
     if not REGISTRY_PATH.exists():
-        return rows
+        return
+    rows = []
     with open(REGISTRY_PATH, encoding="utf-8-sig", newline="") as f:
         for row in csv.DictReader(f):
-            rows[row["game_id"]] = row
-    return rows
+            rows.append(row)
+    if not rows:
+        return
+    with _conn() as con:
+        for row in rows:
+            # youtube_url から status を推定
+            yt = row.get("youtube_url", "")
+            if yt and yt != "skipped":
+                status = "uploaded"
+            elif yt == "skipped":
+                status = "skipped"
+            elif row.get("video_mb"):
+                status = "recorded"
+            else:
+                status = "discovered"
+            con.execute(
+                """INSERT OR IGNORE INTO matches
+                   (game_id, match_id, recorded_at, champion, player, rank,
+                    kills, deaths, assists, cs, vision, gold,
+                    patch, game_date, video_mb, video_filename, youtube_url, status)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    row.get("game_id", ""),
+                    row.get("match_id", ""),
+                    row.get("recorded_at", ""),
+                    row.get("champion", ""),
+                    row.get("player", ""),
+                    row.get("rank", ""),
+                    row.get("kills", ""),
+                    row.get("deaths", ""),
+                    row.get("assists", ""),
+                    row.get("cs", ""),
+                    row.get("vision", ""),
+                    row.get("gold", ""),
+                    row.get("patch", ""),
+                    row.get("game_date", ""),
+                    row.get("video_mb", ""),
+                    row.get("video_filename", ""),
+                    row.get("youtube_url", ""),
+                    status,
+                ),
+            )
+        con.commit()
+    from loguru import logger
+    logger.info(f"[移行] match_list.csv → lol_matches.db ({len(rows)} 件)")
 
 
-def _save(rows: dict[str, dict]):
-    """rowsをCSVに書き出す (ゲーム実施時間の昇順 = game_id昇順)"""
-    REGISTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    sorted_rows = sorted(rows.values(), key=lambda r: int(r["game_id"]))
-    with open(REGISTRY_PATH, "w", encoding="utf-8-sig", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=COLUMNS)
-        writer.writeheader()
-        for row in sorted_rows:
-            writer.writerow({col: row.get(col, "") for col in COLUMNS})
+def _ensure_db() -> None:
+    """DB未存在時はCSVから移行する"""
+    if not DB_PATH.exists():
+        _migrate_from_csv()
 
+
+# -----------------------------------------------
+# ユーティリティ
+# -----------------------------------------------
 
 def _kda_part(kda: str, idx: int) -> str:
-    """'10/4/9' のような kda 文字列から idx 番目 (0=K,1=D,2=A) を返す"""
     parts = kda.split("/")
     return parts[idx].strip() if len(parts) == 3 else ""
 
 
-def upsert(meta: dict, video_path: Optional[Path] = None):
-    """
-    試合をリストに登録/更新する。
+# -----------------------------------------------
+# 公開 API (呼び出し元と互換)
+# -----------------------------------------------
 
-    Args:
-        meta: output/videos/{game_id}.json の内容
-        video_path: mp4ファイルパス (サイズ取得用)
-    """
-    rows = _load()
+def upsert(meta: dict, video_path: Optional[Path] = None) -> None:
+    """試合をDBに登録/更新する"""
+    _ensure_db()
     game_id = str(meta.get("game_id", ""))
     if not game_id:
         return
 
-    # 試合日時
     start_ms = meta.get("game_start_ms", 0)
     if start_ms:
         dt = datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc).astimezone()
@@ -83,111 +193,200 @@ def upsert(meta: dict, video_path: Optional[Path] = None):
     else:
         game_date = ""
 
-    # 動画サイズ
     video_mb = ""
     if video_path and Path(video_path).exists():
         video_mb = str(Path(video_path).stat().st_size // 1024 // 1024)
 
-    existing = rows.get(game_id, {})
-    rows[game_id] = {
-        "game_id":     game_id,
-        "match_id":    meta.get("match_id", ""),
-        "recorded_at": existing.get("recorded_at") or datetime.now().strftime("%Y-%m-%d %H:%M"),
-        "champion":    meta.get("champion", ""),
-        "player":      meta.get("player", ""),
-        "rank":        meta.get("rank", ""),
-        "kills":       str(meta.get("kills", "") or _kda_part(meta.get("kda", ""), 0)),
-        "deaths":      str(meta.get("deaths", "") or _kda_part(meta.get("kda", ""), 1)),
-        "assists":     str(meta.get("assists", "") or _kda_part(meta.get("kda", ""), 2)),
-        "cs":          str(meta.get("cs", "")),
-        "vision":      str(meta.get("vision", "")),
-        "gold":        str(meta.get("gold", "")),
-        "patch":       meta.get("game_version", ""),
-        "game_date":   game_date,
-        "video_mb":       video_mb or existing.get("video_mb", ""),
-        "video_filename": meta.get("video_filename", "") or existing.get("video_filename", ""),
-        "youtube_url":    existing.get("youtube_url", ""),
-    }
-    _save(rows)
+    with _conn() as con:
+        existing = con.execute(
+            "SELECT * FROM matches WHERE game_id=?", (game_id,)
+        ).fetchone()
+        ex = _row_to_dict(existing) if existing else {}
+
+        status = "recorded" if (video_mb or ex.get("video_mb")) else ex.get("status", "discovered")
+
+        con.execute(
+            """INSERT INTO matches
+               (game_id, match_id, recorded_at, champion, player, rank,
+                kills, deaths, assists, cs, vision, gold,
+                patch, game_date, video_mb, video_filename, youtube_url, status)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(game_id) DO UPDATE SET
+                 match_id       = excluded.match_id,
+                 recorded_at    = CASE WHEN recorded_at='' THEN excluded.recorded_at ELSE recorded_at END,
+                 champion       = excluded.champion,
+                 player         = excluded.player,
+                 rank           = excluded.rank,
+                 kills          = excluded.kills,
+                 deaths         = excluded.deaths,
+                 assists        = excluded.assists,
+                 cs             = excluded.cs,
+                 vision         = excluded.vision,
+                 gold           = excluded.gold,
+                 patch          = excluded.patch,
+                 game_date      = excluded.game_date,
+                 video_mb       = CASE WHEN excluded.video_mb!='' THEN excluded.video_mb ELSE video_mb END,
+                 video_filename = CASE WHEN excluded.video_filename!='' THEN excluded.video_filename ELSE video_filename END,
+                 status         = excluded.status
+            """,
+            (
+                game_id,
+                meta.get("match_id", ""),
+                ex.get("recorded_at") or datetime.now().strftime("%Y-%m-%d %H:%M"),
+                meta.get("champion", ""),
+                meta.get("player", ""),
+                meta.get("rank", ""),
+                str(meta.get("kills", "") or _kda_part(meta.get("kda", ""), 0)),
+                str(meta.get("deaths", "") or _kda_part(meta.get("kda", ""), 1)),
+                str(meta.get("assists", "") or _kda_part(meta.get("kda", ""), 2)),
+                str(meta.get("cs", "")),
+                str(meta.get("vision", "")),
+                str(meta.get("gold", "")),
+                meta.get("game_version", ""),
+                game_date,
+                video_mb or ex.get("video_mb", ""),
+                meta.get("video_filename", "") or ex.get("video_filename", ""),
+                ex.get("youtube_url", ""),
+                status,
+            ),
+        )
+        con.commit()
+        rows = [_row_to_dict(r) for r in con.execute(
+            "SELECT * FROM matches ORDER BY CAST(game_id AS INTEGER)"
+        ).fetchall()]
+    _export_csv(rows)
 
 
-def bulk_upsert_candidates(candidates: list[dict]):
-    """
-    find_downloadable_matches() の候補リストを一括でCSVに暫定登録する。
-    録画済み（video_mbあり）の行は上書きしない。
-    """
-    rows = _load()
-    changed = False
+def bulk_upsert_candidates(candidates: list[dict]) -> None:
+    """find_downloadable_matches() の候補リストを一括でDBに暫定登録する"""
+    _ensure_db()
+    with _conn() as con:
+        changed = False
+        for c in candidates:
+            game_id = str(c.get("game_id", ""))
+            if not game_id:
+                continue
+            existing = con.execute(
+                "SELECT video_mb, youtube_url FROM matches WHERE game_id=?", (game_id,)
+            ).fetchone()
+            if existing and existing["video_mb"]:
+                continue  # 録画済みは触らない
 
-    for c in candidates:
-        game_id = str(c.get("game_id", ""))
-        if not game_id:
-            continue
+            start_ms = c.get("game_start_ms", 0)
+            if start_ms:
+                dt = datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc).astimezone()
+                game_date = dt.strftime("%Y-%m-%d %H:%M JST")
+            else:
+                game_date = ""
 
-        existing = rows.get(game_id, {})
-        if existing.get("video_mb"):   # 録画済みは触らない
-            continue
+            gv    = c.get("game_version", "")
+            patch = ".".join(gv.split(".")[:2]) if gv else ""
 
-        start_ms = c.get("game_start_ms", 0)
-        if start_ms:
-            dt = datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc).astimezone()
-            game_date = dt.strftime("%Y-%m-%d %H:%M JST")
-        else:
-            game_date = ""
+            yt = (existing["youtube_url"] if existing else "") or ""
+            status = "skipped" if yt == "skipped" else (
+                "uploaded" if yt else "discovered"
+            )
 
-        gv    = c.get("game_version", "")
-        patch = ".".join(gv.split(".")[:2]) if gv else ""
+            con.execute(
+                """INSERT INTO matches
+                   (game_id, match_id, recorded_at, champion, player, rank,
+                    kills, deaths, assists, cs, vision, gold,
+                    patch, game_date, video_mb, video_filename, youtube_url, status)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(game_id) DO UPDATE SET
+                     match_id  = excluded.match_id,
+                     champion  = excluded.champion,
+                     player    = excluded.player,
+                     kills     = excluded.kills,
+                     deaths    = excluded.deaths,
+                     assists   = excluded.assists,
+                     cs        = excluded.cs,
+                     vision    = excluded.vision,
+                     gold      = excluded.gold,
+                     patch     = excluded.patch,
+                     game_date = excluded.game_date,
+                     status    = CASE WHEN video_mb!='' THEN status ELSE excluded.status END
+                """,
+                (
+                    game_id,
+                    c.get("match_id", ""),
+                    "",
+                    c.get("champion", ""),
+                    c.get("player", ""),
+                    "Challenger",
+                    str(c.get("kills", "")),
+                    str(c.get("deaths", "")),
+                    str(c.get("assists", "")),
+                    str(c.get("cs", "")),
+                    str(c.get("vision", "")),
+                    str(c.get("gold", "")),
+                    patch,
+                    game_date,
+                    "",
+                    "",
+                    yt,
+                    status,
+                ),
+            )
+            changed = True
 
-        rows[game_id] = {
-            "game_id":        game_id,
-            "match_id":       c.get("match_id", ""),
-            "recorded_at":    existing.get("recorded_at", ""),
-            "champion":       c.get("champion", ""),
-            "player":         c.get("player", ""),
-            "rank":           existing.get("rank", "Challenger"),
-            "kills":          str(c.get("kills", "")),
-            "deaths":         str(c.get("deaths", "")),
-            "assists":        str(c.get("assists", "")),
-            "cs":             str(c.get("cs", "")),
-            "vision":         str(c.get("vision", "")),
-            "gold":           str(c.get("gold", "")),
-            "patch":          patch,
-            "game_date":      game_date,
-            "video_mb":       "",
-            "video_filename": "",
-            "youtube_url":    existing.get("youtube_url", ""),
-        }
-        changed = True
-
+        if changed:
+            con.commit()
+            rows = [_row_to_dict(r) for r in con.execute(
+                "SELECT * FROM matches ORDER BY CAST(game_id AS INTEGER)"
+            ).fetchall()]
     if changed:
-        _save(rows)
+        _export_csv(rows)
 
 
-def update_youtube_url(game_id: str | int, url: str):
-    """YouTube URLを登録/更新する"""
-    rows = _load()
+def update_youtube_url(game_id: str | int, url: str) -> None:
+    """YouTube URL を登録/更新する"""
+    _ensure_db()
     gid = str(game_id)
-    if gid in rows:
-        rows[gid]["youtube_url"] = url
-        _save(rows)
+    status = "skipped" if url == "skipped" else ("uploaded" if url else "recorded")
+    with _conn() as con:
+        con.execute(
+            "UPDATE matches SET youtube_url=?, status=? WHERE game_id=?",
+            (url, status, gid),
+        )
+        con.commit()
+        rows = [_row_to_dict(r) for r in con.execute(
+            "SELECT * FROM matches ORDER BY CAST(game_id AS INTEGER)"
+        ).fetchall()]
+    _export_csv(rows)
 
 
-def update_video_filename(game_id: str | int, filename: str):
+def update_video_filename(game_id: str | int, filename: str) -> None:
     """動画ファイル名を登録/更新する"""
-    rows = _load()
+    _ensure_db()
     gid = str(game_id)
-    if gid in rows:
-        rows[gid]["video_filename"] = filename
-        _save(rows)
+    with _conn() as con:
+        con.execute(
+            "UPDATE matches SET video_filename=? WHERE game_id=?",
+            (filename, gid),
+        )
+        con.commit()
+        rows = [_row_to_dict(r) for r in con.execute(
+            "SELECT * FROM matches ORDER BY CAST(game_id AS INTEGER)"
+        ).fetchall()]
+    _export_csv(rows)
 
 
 def get_row(game_id: str | int) -> Optional[dict]:
     """指定 game_id の行を返す (存在しない場合 None)"""
-    rows = _load()
-    return rows.get(str(game_id))
+    _ensure_db()
+    with _conn() as con:
+        row = con.execute(
+            "SELECT * FROM matches WHERE game_id=?", (str(game_id),)
+        ).fetchone()
+    return _row_to_dict(row) if row else None
 
 
 def get_all() -> list[dict]:
-    """全行をリストで返す (ゲーム実施時間の昇順 = game_id昇順)"""
-    rows = _load()
-    return sorted(rows.values(), key=lambda r: int(r["game_id"]))
+    """全行をリストで返す (game_id 昇順)"""
+    _ensure_db()
+    with _conn() as con:
+        rows = con.execute(
+            "SELECT * FROM matches ORDER BY CAST(game_id AS INTEGER)"
+        ).fetchall()
+    return [_row_to_dict(r) for r in rows]
