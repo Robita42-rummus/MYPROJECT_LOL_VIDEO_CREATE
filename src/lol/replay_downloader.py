@@ -176,6 +176,12 @@ class ReplayDownloader:
                 if age_hours > max_age_hours:
                     continue
 
+                # 15分以下の試合はスキップ (短すぎる試合 = 早期降参/remake 等)
+                game_duration_sec = info.get("gameDuration", 0)
+                if game_duration_sec < 15 * 60:
+                    logger.debug(f"短い試合をスキップ ({game_duration_sec // 60}分): {match_id}")
+                    continue
+
                 # 勝利ジャングラーが対象プレイヤーかチェック
                 winning_jungler_puuid = None
                 jungler = {}
@@ -212,8 +218,29 @@ class ReplayDownloader:
                     **jungler,
                 })
 
-        # 新しい順にソート
+        # 新しい順にソート (age_hours 昇順 = 新しい順)
         results.sort(key=lambda r: r["age_hours"])
+
+        # 同一プレイヤーの試合は最新1件のみ残す
+        # (1日5件制限があるため、同じプレイヤーの複数試合は避ける)
+        seen_puuids: set = set()
+        deduped = []
+        for r in results:
+            p = r.get("puuid", "")
+            if p and p in seen_puuids:
+                logger.debug(
+                    f"同一プレイヤーの重複試合をスキップ: {r.get('player')} ({r['match_id']})"
+                )
+                continue
+            if p:
+                seen_puuids.add(p)
+            deduped.append(r)
+        if len(deduped) < len(results):
+            logger.info(
+                f"同一プレイヤー重複除去: {len(results)} → {len(deduped)} 件"
+            )
+        results = deduped
+
         logger.info(f"ダウンロード候補 {len(results)} 件")
         return results
 

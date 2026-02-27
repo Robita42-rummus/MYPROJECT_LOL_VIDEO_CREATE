@@ -399,7 +399,7 @@ def make_thumbnail(meta: dict, patch: str, summ_map: dict, rune_map: dict) -> Im
     canvas.paste(band.convert("RGBA"), (0, Y_PLAYER))
 
     max_name_w = LEFT_W - PAD * 2
-    pf = _fit_font(player, max_name_w, "meiryob.ttc", 84, min_size=28)
+    pf = _fit_font(player, max_name_w, "msyhbd.ttc", 84, min_size=28)
     pb = draw.textbbox((0, 0), player, font=pf)
     pw, ph = pb[2] - pb[0], pb[3] - pb[1]
     py = Y_PLAYER + (band_h - ph) // 2 - pb[1]
