@@ -29,6 +29,49 @@ from src.youtube.uploader import YouTubeUploader
 
 OUTPUT_DIR     = Path("output/videos")
 THUMBNAILS_DIR = Path("output/thumbnails")
+ASSETS_DIR     = Path("assets")
+
+
+def _load_rune_names() -> dict:
+    """assets/runesReforged.json から {rune_id: name} マップを返す"""
+    path = ASSETS_DIR / "runesReforged.json"
+    if not path.exists():
+        return {}
+    try:
+        names = {}
+        for tree in json.loads(path.read_text(encoding="utf-8")):
+            names[tree["id"]] = tree["name"]
+            for slot in tree.get("slots", []):
+                for rune in slot.get("runes", []):
+                    names[rune["id"]] = rune["name"]
+        return names
+    except Exception:
+        return {}
+
+
+def _format_runes(meta: dict) -> str:
+    """
+    メタデータからルーン情報を1行で返す。
+    例: "Electrocute (Domination / Sorcery)  Cheap Shot / Eyeball Collection / Treasure Hunter / Absolute Focus / Scorch"
+    """
+    rune_names = _load_rune_names()
+    if not rune_names:
+        return ""
+
+    keystone     = rune_names.get(meta.get("rune_keystone", 0), "")
+    primary      = rune_names.get(meta.get("rune_primary_style", 0), "")
+    secondary    = rune_names.get(meta.get("rune_secondary_style", 0), "")
+    selections   = meta.get("rune_selections", [])
+
+    # キーストーン以外の選択ルーン (primary: idx1-3, secondary: idx4-5)
+    sub_runes = [rune_names.get(rid, "") for rid in selections[1:] if rid]
+    sub_runes = [n for n in sub_runes if n]
+
+    tree_str   = f"{primary} / {secondary}" if primary and secondary else primary or secondary
+    rune_line  = f"{keystone} ({tree_str})" if keystone else tree_str
+    if sub_runes:
+        rune_line += "  " + " / ".join(sub_runes)
+    return rune_line
 
 
 def _find_video_path(game_id: str) -> Path | None:
@@ -117,18 +160,19 @@ def main():
         dt = datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc).astimezone()
         date_str = dt.strftime("%Y-%m-%d %H:%M JST")
 
+    rune_str = _format_runes(meta)
     description_lines = [
-        f"【JP Challenger ジャングル】",
-        f"",
+        "【JP Challenger ジャングル】",
+        "",
         f"チャンピオン: {champion}",
         f"プレイヤー: {player}",
         f"ランク: {rank}",
         f"KDA: {kda} ({kills}/{deaths}/{assists})",
-        f"CS: {cs}  ビジョン: {vision}",
+        f"ルーン: {rune_str}" if rune_str else "",
         f"パッチ: {patch}" if patch else "",
         f"試合日時: {date_str}" if date_str else "",
-        f"",
-        f"#LeagueOfLegends #LoL #チャレンジャー #ジャングル #日本サーバー",
+        "",
+        "#LeagueOfLegends #LoL #チャレンジャー #ジャングル #日本サーバー",
     ]
     description = "\n".join(line for line in description_lines if line is not None)
 
@@ -215,6 +259,7 @@ def upload_game(game_id: str | int, config: dict) -> str | None:
         dt = datetime.fromtimestamp(start_ms / 1000, tz=tz.utc).astimezone()
         date_str = dt.strftime("%Y-%m-%d %H:%M JST")
 
+    rune_str = _format_runes(meta)
     description_lines = [
         "【JP Challenger ジャングル】",
         "",
@@ -222,7 +267,7 @@ def upload_game(game_id: str | int, config: dict) -> str | None:
         f"プレイヤー: {player}",
         f"ランク: {rank}",
         f"KDA: {kda} ({kills}/{deaths}/{assists})",
-        f"CS: {cs}  ビジョン: {vision}",
+        f"ルーン: {rune_str}" if rune_str else "",
         f"パッチ: {patch}" if patch else "",
         f"試合日時: {date_str}" if date_str else "",
         "",
