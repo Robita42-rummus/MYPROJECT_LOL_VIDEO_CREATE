@@ -58,21 +58,38 @@ class ReplayDownloader:
 
     def collect_jungle_players(self, top_n: int = 100) -> list[dict]:
         """
-        チャレンジャー上位 top_n 人を取得し、ロールを判定して
-        JUNGLEプレイヤーのリストを返す。
+        Challenger + Grandmaster を LP 降順で合算し、上位 top_n 人を取得して
+        ロールを判定し、JUNGLEプレイヤーのリストを返す。
 
         PlayerTracker でキャッシュを使い、未登録・期限切れのみ再判定。
 
         Returns:
-            [{"puuid": "...", "game_name": "...", "tag": "...", "lp": 0}]
+            [{"puuid": "...", "game_name": "...", "tag": "...", "lp": 0, "tier": "Challenger"}]
         """
         from .player_tracker import PlayerTracker
 
         tracker = PlayerTracker()
 
-        # LP降順で上位 top_n 人を取得
-        entries = self.riot_client.get_challenger_players()[:top_n]
-        logger.info(f"チャレンジャー上位 {len(entries)} 人を対象にロール判定...")
+        # Challenger + Grandmaster を合算して LP 降順上位 top_n 人を取得
+        challenger  = self.riot_client.get_challenger_players()
+        grandmaster = self.riot_client.get_grandmaster_players()
+
+        all_entries = []
+        for e in challenger:
+            e["_tier"] = "Challenger"
+            all_entries.append(e)
+        for e in grandmaster:
+            e["_tier"] = "Grandmaster"
+            all_entries.append(e)
+
+        all_entries.sort(key=lambda x: x["leaguePoints"], reverse=True)
+        entries = all_entries[:top_n]
+
+        ch_count = sum(1 for e in entries if e.get("_tier") == "Challenger")
+        gm_count = sum(1 for e in entries if e.get("_tier") == "Grandmaster")
+        logger.info(
+            f"Challenger {ch_count}人 + Grandmaster {gm_count}人 = 上位 {len(entries)} 人を対象にロール判定..."
+        )
 
         player_infos = []
         for e in entries:
@@ -88,6 +105,7 @@ class ReplayDownloader:
                 "game_name": e.get("summonerName", ""),
                 "tag":       "",
                 "lp":        e.get("leaguePoints", 0),
+                "tier":      e.get("_tier", "Challenger"),
             })
 
         new_count, skip_count = tracker.bulk_detect(player_infos, self.riot_client)

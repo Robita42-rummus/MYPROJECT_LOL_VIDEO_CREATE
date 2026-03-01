@@ -410,6 +410,14 @@ def wait_for_game_end(game_duration: float, team_id: int):
             cur = get_playback_time()
             if cur is not None and cur >= game_duration:
                 logger.info(f"  ゲーム終了検出 (t={cur:.0f}s >= {game_duration:.0f}s)")
+                # スコアボードを開いていなければ開く
+                if not scoreboard_open:
+                    _run_ahk(AHK_KEY_O)
+                    scoreboard_open = True
+                    logger.info("  スコアボード表示 (ゲーム終了)")
+                # スコアボードを表示したまま SCOREBOARD_DURATION 秒録画を続けて終了
+                logger.info(f"  {SCOREBOARD_DURATION:.0f}秒後に録画停止...")
+                time.sleep(SCOREBOARD_DURATION)
                 break
             if i % 60 == 59:
                 prog = f"t={cur:.0f}s" if cur else "不明"
@@ -435,12 +443,7 @@ def wait_for_game_end(game_duration: float, team_id: int):
                 last_show_time     = now
                 logger.info(f"  スコアボード表示 (リコール検出 x={cx:.0f}, z={cz:.0f})")
 
-    # 終了時にスコアボードが開いたままなら閉じる
-    if scoreboard_open:
-        _run_ahk(AHK_KEY_O)
-        logger.info("  スコアボード非表示 (終了処理)")
-
-    logger.info("  待機タイムアウト → 録画停止")
+    logger.info("  録画停止")
 
 
 def mkv_to_mp4(mkv: Path, mp4: Path) -> bool:

@@ -37,7 +37,7 @@ python -c "from src.youtube.quota_tracker import log_status; log_status()"
 
 パイプラインは `record_matches.py` → `create_thumbnails.py` → `upload_video.py` の3ステップ構成 (録画とアップロードは並行実行):
 
-1. **試合発見** — `src/lol/replay_downloader.py` の `find_downloadable_matches` がChallenger上位100人を取得し、`PlayerTracker` でロール判定（キャッシュ活用）。**JUNGLEロールの選手**が24時間以内に勝利した試合を収集。条件: 現パッチ・ランクソロ(queue=420)。候補一覧は `cache/match_candidates.json` に試合日時順で保存。
+1. **試合発見** — `src/lol/replay_downloader.py` の `find_downloadable_matches` が **Challenger + Grandmaster を LP 降順で合算した上位100人**を取得し、`PlayerTracker` でロール判定（キャッシュ活用）。**JUNGLEロールの選手**が24時間以内に勝利した試合を収集。条件: 現パッチ・ランクソロ(queue=420)・**15分以上**・**同一プレイヤーは最新1件のみ**。候補一覧は `cache/match_candidates.json` に試合日時順で保存。
 
 2. **プレイヤーロールキャッシュ** — `src/lol/player_tracker.py` が `cache/player_roles.json` に選手ごとのロールと**プレイヤー名**を保存。直近10試合の `teamPosition` 最頻値がロール。7日間有効、新規・期限切れのみ再判定。名前は日次スナップショット実行時に自動更新。
 
@@ -51,7 +51,7 @@ python -c "from src.youtube.quota_tracker import log_status; log_status()"
 
 7. **試合リスト** — `output/lol_matches.db` (SQLite) がメイン。書き込みのたびに `output/match_list.csv` へ自動エクスポート（Excel閲覧用）。`match_list.py` で表示・再構築。
 
-8. **日次スナップショット** — `main.py` / `record_matches.py` 実行時に自動保存。`output/daily/players/YYYY-MM-DD.csv`（チャレンジャー上位プレイヤー一覧）と `output/daily/jungle/YYYY-MM-DD.csv`（JG試合候補）を当日1回のみ生成。
+8. **日次スナップショット** — `main.py` / `record_matches.py` 実行時に自動保存。`output/daily/players/YYYY-MM-DD.csv`（**Challenger+Grandmaster** 上位プレイヤー一覧・tier列付き）と `output/daily/jungle/YYYY-MM-DD.csv`（JG試合候補）を当日1回のみ生成。
 
 9. **ファイル削除** — `cleanup.py` がアップロード済み + N日以上経過した試合の mp4/json/サムネイルを削除。`python main.py --cleanup` または `python cleanup.py` で実行。
 
@@ -64,7 +64,7 @@ python -c "from src.youtube.quota_tracker import log_status; log_status()"
 | `output/match_list.csv` | DBの自動エクスポート (Excel閲覧用・書き込み不要) |
 | `output/videos/{タイトル}.mp4` | 録画済み動画 (YouTubeタイトルと同じファイル名) |
 | `output/videos/{game_id}.json` | 試合メタデータ (サムネイル・アップロードに使用) |
-| `output/daily/players/YYYY-MM-DD.csv` | 日次チャレンジャープレイヤー一覧 |
+| `output/daily/players/YYYY-MM-DD.csv` | 日次 Challenger+Grandmaster プレイヤー一覧 (tier列付き) |
 | `output/daily/jungle/YYYY-MM-DD.csv` | 日次JG試合候補一覧 |
 | `cache/match_candidates.json` | 直近の録画候補リスト (試合日時昇順) |
 | `cache/player_roles.json` | プレイヤーロール・名前キャッシュ (7日間有効) |
@@ -146,7 +146,7 @@ python -c "from src.youtube.quota_tracker import log_status; log_status()"
 ```
 
 フォント:
-- プレイヤー名: `meiryob.ttc` (メイリオ Bold) — 日本語対応
+- プレイヤー名: `msyhbd.ttc` (Microsoft YaHei Bold) — 日本語・中国語対応
 - KDA数字: `impact.ttf`
 - パッチバージョン: `impact.ttf` 最大130px (巨大・中央・ゴールド)
 - 日時: `arial.ttf` 18px (最下端・グレー)
@@ -166,7 +166,7 @@ obs:
   password: "OBS WebSocketパスワード"  # OBS → ツール → WebSocketサーバー設定
 
 crawler:
-  top_n_players: 100          # Challenger上位何人を対象にするか
+  top_n_players: 100          # Challenger+Grandmaster LP降順で上位何人を対象にするか
   role_refresh_days: 7        # プレイヤーロールキャッシュ有効期間 (日)
 
 cleanup:

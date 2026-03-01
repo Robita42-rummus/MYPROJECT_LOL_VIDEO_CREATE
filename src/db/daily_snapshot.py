@@ -19,7 +19,7 @@ from loguru import logger
 DAILY_DIR = Path("output/daily")
 
 PLAYER_COLUMNS = [
-    "rank", "player", "role", "lp", "wins", "losses", "win_rate",
+    "rank", "tier", "player", "role", "lp", "wins", "losses", "win_rate",
 ]
 
 JUNGLE_COLUMNS = [
@@ -79,9 +79,22 @@ def save_jungle_matches(candidates: list[dict], date: Optional[str] = None) -> P
     return path
 
 
+def _fetch_league(api_key: str, url: str, tier: str) -> list[dict]:
+    """指定リーグのエントリを取得して _tier フィールドを付与して返す"""
+    resp = requests.get(url, params={"api_key": api_key}, timeout=10)
+    if resp.status_code != 200:
+        logger.warning(f"[日次] {tier} API エラー {resp.status_code}")
+        return []
+    entries = resp.json().get("entries", [])
+    for e in entries:
+        e["_tier"] = tier
+    return entries
+
+
 def save_players(api_key: str, roles_cache: dict, date: Optional[str] = None) -> Path:
     """
-    チャレンジャープレイヤーリストを日付別 CSV に保存する。
+    Challenger + Grandmaster プレイヤーリストを LP 降順で合算し、
+    日付別 CSV に保存する。
     当日分がすでに存在する場合はスキップする (余分な API 呼び出しを避けるため)。
 
     output/daily/players/YYYY-MM-DD.csv
@@ -95,20 +108,28 @@ def save_players(api_key: str, roles_cache: dict, date: Optional[str] = None) ->
         logger.info(f"[日次] プレイヤーリスト: {path.name} 既存のためスキップ")
         return path
 
-    # Challenger リスト取得 (1 回)
-    resp = requests.get(
+    # Challenger + Grandmaster を取得して LP 降順に合算
+    challenger  = _fetch_league(
+        api_key,
         "https://jp1.api.riotgames.com/lol/league/v4/challengerleagues/by-queue/RANKED_SOLO_5x5",
-        params={"api_key": api_key},
-        timeout=10,
+        "Challenger",
     )
-    if resp.status_code != 200:
-        logger.error(f"[日次] Challenger API エラー {resp.status_code}")
+    grandmaster = _fetch_league(
+        api_key,
+        "https://jp1.api.riotgames.com/lol/league/v4/grandmasterleagues/by-queue/RANKED_SOLO_5x5",
+        "Grandmaster",
+    )
+    if not challenger and not grandmaster:
+        logger.error("[日次] Challenger/Grandmaster API 両方失敗")
         return path
 
     entries = sorted(
-        resp.json().get("entries", []),
+        challenger + grandmaster,
         key=lambda e: e["leaguePoints"],
         reverse=True,
+    )
+    logger.info(
+        f"[日次] Challenger {len(challenger)}人 + Grandmaster {len(grandmaster)}人 = 合計 {len(entries)} 人"
     )
 
     # PUUID → プレイヤー名 (account API)
@@ -143,6 +164,7 @@ def save_players(api_key: str, roles_cache: dict, date: Optional[str] = None) ->
             name   = names.get(puuid, "")
             writer.writerow({
                 "rank":     i,
+                "tier":     e.get("_tier", ""),
                 "player":   name,
                 "role":     role,
                 "lp":       e["leaguePoints"],
