@@ -7,7 +7,7 @@ JP チャレンジャー試合 フルゲーム自動録画スクリプト
 3. 各試合について:
    - 勝利チームのジャングラーを特定
    - リプレイ起動 → t=0 から OBS でフルゲーム録画 (60fps / NVENC)
-   - 起動時に AHK でカメラをジャングラーに固定 (1回のみ)
+   - 起動時に Interception ドライバでカメラをジャングラーに固定 (1回のみ)
    - MKV → MP4 リマックス → output/videos/{game_id}.mp4 に保存
 
 使い方: python record_matches.py
@@ -52,9 +52,10 @@ REPLAY_BASE  = "https://127.0.0.1:2999"
 MAX_MATCHES  = 50       # 1回の実行で録画する最大試合数 (スキップは含まない)
 OUTPUT_DIR   = Path("output/videos")
 
-AHK_BLUE  = Path("press_key2.ahk")   # ブルーチームジャングラー (キー2)
-AHK_RED   = Path("press_keyw.ahk")   # レッドチームジャングラー (キーW)
-AHK_KEY_O = Path("press_keyo.ahk")   # スコアボードトグル (O キー)
+# Interception スキャンコード
+SCAN_2 = 0x03   # ブルーチームジャングラー
+SCAN_W = 0x11   # レッドチームジャングラー
+SCAN_O = 0x18   # スコアボードトグル
 
 # Summoner's Rift マップ座標 (カメラ x,z)
 # ベース判定閾値 (APIから実測調整可)
@@ -72,30 +73,74 @@ OBS_PASSWORD = ""
 
 
 # -----------------------------------------------
-# AHK・カメラ操作
+# Interception キー注入
 # -----------------------------------------------
 
-def _run_ahk(script: Path):
-    try:
-        subprocess.run(["AutoHotkey.exe", str(script)],
-                       timeout=10, capture_output=True)
+import ctypes as _ctypes
+
+LOL_WINDOW_TITLE = "League of Legends (TM) Client"
+
+try:
+    from interception.interception import ffi as _icp_ffi, lib as _icp_lib
+    _INTERCEPTION_OK = True
+except Exception as _e:
+    logger.warning(f"Interception ロード失敗: {_e}")
+    _INTERCEPTION_OK = False
+
+
+def _activate_lol() -> bool:
+    """LoLウィンドウをフォアグラウンドに強制設定する"""
+    user32 = _ctypes.windll.user32
+    hwnd = user32.FindWindowW(None, LOL_WINDOW_TITLE)
+    if not hwnd:
+        logger.warning(f"LoLウィンドウが見つからない: {LOL_WINDOW_TITLE}")
+        return False
+
+    # AttachThreadInput でフォアグラウンド制限を回避
+    curr_hwnd   = user32.GetForegroundWindow()
+    curr_thread = user32.GetWindowThreadProcessId(curr_hwnd, None)
+    tgt_thread  = user32.GetWindowThreadProcessId(hwnd, None)
+    user32.AttachThreadInput(curr_thread, tgt_thread, True)
+    user32.ShowWindow(hwnd, 9)        # SW_RESTORE
+    user32.BringWindowToTop(hwnd)
+    user32.SetForegroundWindow(hwnd)
+    user32.AttachThreadInput(curr_thread, tgt_thread, False)
+
+    time.sleep(0.5)
+    fg = user32.GetForegroundWindow()
+    if fg == hwnd:
+        logger.info("LoL フォアグラウンド確認")
+        return True
+    logger.warning(f"フォアグラウンド設定失敗 (期待={hwnd}, 実際={fg})")
+    return False
+
+
+def _send_key(scan_code: int, device: int = 1):
+    """Interception ドライバ経由でキーをHIDレベルで注入する"""
+    if not _INTERCEPTION_OK:
+        logger.warning("Interception 未使用: キー注入スキップ")
         return
-    except FileNotFoundError:
-        pass
-    for path in [
-        r"C:\Program Files\AutoHotkey\AutoHotkey.exe",
-        r"C:\Program Files\AutoHotkey\v2\AutoHotkey64.exe",
-        r"C:\Program Files (x86)\AutoHotkey\AutoHotkey.exe",
-    ]:
-        if Path(path).exists():
-            subprocess.run([path, str(script)], timeout=10, capture_output=True)
-            return
-    logger.warning("AutoHotkey.exe が見つからない")
+    ctx = _icp_lib.interception_create_context()
+    try:
+        stroke = _icp_ffi.new("InterceptionKeyStroke *")
+        stroke.code = scan_code
+        stroke.information = 0
+        stroke.state = 0  # KEY_DOWN
+        _icp_lib.interception_send(ctx, device, _icp_ffi.cast("InterceptionStroke *", stroke), 1)
+        time.sleep(0.05)
+        stroke.state = 1  # KEY_UP
+        _icp_lib.interception_send(ctx, device, _icp_ffi.cast("InterceptionStroke *", stroke), 1)
+    finally:
+        _icp_lib.interception_destroy_context(ctx)
 
 
 def press_jungler_key(team_id: int):
-    """勝利チームのジャングラーキーを AHK で押す"""
-    _run_ahk(AHK_BLUE if team_id == 100 else AHK_RED)
+    """勝利チームのジャングラーキーを注入する"""
+    _activate_lol()
+    scan = SCAN_2 if team_id == 100 else SCAN_W
+    _send_key(scan)
+    time.sleep(0.3)
+    _send_key(scan)
 
 
 
@@ -412,7 +457,8 @@ def wait_for_game_end(game_duration: float, team_id: int):
                 logger.info(f"  ゲーム終了検出 (t={cur:.0f}s >= {game_duration:.0f}s)")
                 # スコアボードを開いていなければ開く
                 if not scoreboard_open:
-                    _run_ahk(AHK_KEY_O)
+                    _activate_lol()
+                    _send_key(SCAN_O)
                     scoreboard_open = True
                     logger.info("  スコアボード表示 (ゲーム終了)")
                 # スコアボードを表示したまま SCOREBOARD_DURATION 秒録画を続けて終了
@@ -425,7 +471,8 @@ def wait_for_game_end(game_duration: float, team_id: int):
 
         # スコアボードを閉じる (表示から SCOREBOARD_DURATION 秒後)
         if scoreboard_open and (now - scoreboard_open_at) >= SCOREBOARD_DURATION:
-            _run_ahk(AHK_KEY_O)
+            _activate_lol()
+            _send_key(SCAN_O)
             scoreboard_open = False
             logger.info("  スコアボード非表示")
 
@@ -437,7 +484,8 @@ def wait_for_game_end(game_duration: float, team_id: int):
                 was_outside_base = True
             elif was_outside_base:
                 # ベース外→ベース内への遷移 = リコール検出
-                _run_ahk(AHK_KEY_O)
+                _activate_lol()
+                _send_key(SCAN_O)
                 scoreboard_open    = True
                 scoreboard_open_at = now
                 last_show_time     = now
@@ -526,9 +574,10 @@ def process_match(
 
     # ゲーム開始時のスコアボード表示
     logger.info("  スコアボード表示 (ゲーム開始)")
-    _run_ahk(AHK_KEY_O)
+    _send_key(SCAN_O)
     time.sleep(SCOREBOARD_DURATION)
-    _run_ahk(AHK_KEY_O)
+    _activate_lol()
+    _send_key(SCAN_O)
     logger.info("  スコアボード非表示")
 
     # ゲーム終了まで待機 → OBS録画停止
@@ -582,42 +631,85 @@ def run(max_matches: int = MAX_MATCHES, on_recorded=None, interactive: bool = Fa
     top_n = config.get("crawler", {}).get("top_n_players", 100)
 
     # Step 1: JP チャレンジャー上位プレイヤーのロールを判定し、試合を収集
-    logger.info("=== JP チャレンジャー上位選手の JUNGLE 試合を収集中 ===")
-    candidates = downloader.find_downloadable_matches(
-        max_matches=200,
-        top_n=top_n,
-    )
-    if not candidates:
-        logger.error("ダウンロード可能な試合が見つからない (現パッチの試合のみ対応)")
-        sys.exit(1)
+    # キャッシュが24時間以内かつ未処理の試合が残っている場合は流用する
+    candidates = None
+    cache_path = Path("cache/match_candidates.json")
 
-    # 候補リストをキャッシュに保存 (game_start_ms 昇順=古い順)
     try:
-        Path("cache").mkdir(exist_ok=True)
-        save_list = sorted(candidates, key=lambda c: c.get("game_start_ms", 0))
-        with open("cache/match_candidates.json", "w", encoding="utf-8") as f:
-            json.dump(save_list, f, ensure_ascii=False, indent=2)
-        logger.info(f"候補リストを保存: cache/match_candidates.json ({len(save_list)} 件)")
-        # 候補をCSVに暫定登録 (champion/player/KDA含む、video_mbは録画後に更新)
-        from src.db.match_registry import bulk_upsert_candidates
-        bulk_upsert_candidates(save_list)
-        logger.info(f"候補 {len(save_list)} 件をCSVに暫定登録")
+        from src.db.match_registry import get_row as _registry_get_row_early
+    except Exception:
+        _registry_get_row_early = None
 
-        # 日次スナップショット保存
+    def _has_unfinished(cached: list) -> bool:
+        """キャッシュ内に録画もアップロードも終わっていない試合があるか"""
+        for c in cached:
+            gid = str(c["game_id"])
+            old_mp4 = OUTPUT_DIR / f"{gid}.mp4"
+            if old_mp4.exists() and old_mp4.stat().st_size > 1_000_000:
+                continue
+            if _registry_get_row_early:
+                row = _registry_get_row_early(gid)
+                if row:
+                    if row.get("youtube_url"):
+                        continue
+                    if row.get("video_filename"):
+                        titled = OUTPUT_DIR / row["video_filename"]
+                        if titled.exists() and titled.stat().st_size > 1_000_000:
+                            continue
+            return True
+        return False
+
+    used_cache = False
+    if cache_path.exists():
+        age_seconds = time.time() - cache_path.stat().st_mtime
+        if age_seconds < 86400:  # 24時間以内
+            try:
+                with open(cache_path, encoding="utf-8") as f:
+                    cached_list = json.load(f)
+                if cached_list and _has_unfinished(cached_list):
+                    candidates = cached_list
+                    used_cache = True
+                    logger.info(f"=== キャッシュの試合リストを流用 ({len(candidates)} 件, {age_seconds/3600:.1f}h前) ===")
+            except Exception as e:
+                logger.warning(f"キャッシュ読み込み失敗: {e}")
+
+    if candidates is None:
+        logger.info("=== JP チャレンジャー上位選手の JUNGLE 試合を収集中 ===")
+        candidates = downloader.find_downloadable_matches(
+            max_matches=200,
+            top_n=top_n,
+        )
+        if not candidates:
+            logger.error("ダウンロード可能な試合が見つからない (現パッチの試合のみ対応)")
+            sys.exit(1)
+
+    # キャッシュ流用時はAPI呼び出しを伴う登録・スナップショットをスキップ
+    if not used_cache:
         try:
-            import json as _json
-            from src.db.daily_snapshot import save_jungle_matches, save_players
-            save_jungle_matches(save_list)
-            _roles = {}
-            _roles_path = Path("cache/player_roles.json")
-            if _roles_path.exists():
-                _roles = _json.loads(_roles_path.read_text(encoding="utf-8"))
-            save_players(config["riot"]["api_key"], _roles)
-        except Exception as _e:
-            logger.warning(f"日次スナップショット保存失敗: {_e}")
+            Path("cache").mkdir(exist_ok=True)
+            save_list = sorted(candidates, key=lambda c: c.get("game_start_ms", 0))
+            with open(cache_path, "w", encoding="utf-8") as f:
+                json.dump(save_list, f, ensure_ascii=False, indent=2)
+            logger.info(f"候補リストを保存: cache/match_candidates.json ({len(save_list)} 件)")
+            from src.db.match_registry import bulk_upsert_candidates
+            bulk_upsert_candidates(save_list)
+            logger.info(f"候補 {len(save_list)} 件をCSVに暫定登録")
 
-    except Exception as e:
-        logger.warning(f"候補リスト保存失敗: {e}")
+            # 日次スナップショット保存
+            try:
+                import json as _json
+                from src.db.daily_snapshot import save_jungle_matches, save_players
+                save_jungle_matches(save_list)
+                _roles = {}
+                _roles_path = Path("cache/player_roles.json")
+                if _roles_path.exists():
+                    _roles = _json.loads(_roles_path.read_text(encoding="utf-8"))
+                save_players(config["riot"]["api_key"], _roles)
+            except Exception as _e:
+                logger.warning(f"日次スナップショット保存失敗: {_e}")
+
+        except Exception as e:
+            logger.warning(f"候補リスト保存失敗: {e}")
 
     # 録画済みを除外した実際の対象一覧
     # (タイトルリネーム済みの場合は video_filename でも確認)
