@@ -173,6 +173,15 @@ def show_summary(uploaded: dict[int, str]) -> None:
         logger.info(f"  今回アップロード:  {len(uploaded)} 件")
         for gid, url in uploaded.items():
             logger.info(f"    {gid} → {url}")
+
+    # 録画済みだがアップロードできていない試合を表示
+    failed = get_unuploaded_game_ids()
+    if failed:
+        logger.warning(f"\n  ⚠ アップロード未完了: {len(failed)} 件")
+        logger.warning("  手動アップロードコマンド:")
+        for gid in failed:
+            logger.warning(f"    python upload_video.py {gid}")
+
     logger.info(f"\n試合一覧: python match_list.py --show")
 
 

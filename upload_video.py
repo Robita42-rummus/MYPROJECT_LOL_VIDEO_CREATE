@@ -132,6 +132,14 @@ def main():
         logger.error(f"動画なし: output/videos/{game_id}.mp4 (またはリネーム済みファイル)")
         sys.exit(1)
 
+    # サムネイルがなければ生成する
+    if not thumb_path.exists():
+        try:
+            from create_thumbnails import generate as thumb_generate
+            thumb_generate([game_id])
+        except Exception as e:
+            logger.warning(f"サムネイル生成失敗: {e}")
+
     meta = json.loads(json_path.read_text(encoding="utf-8"))
     champion = meta.get("champion", "")
     player   = meta.get("player", "")
