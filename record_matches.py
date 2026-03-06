@@ -568,7 +568,7 @@ def process_match(
         kill_lol()
         return None
 
-    # カメラ設定 (AHK) - 起動時に1回だけ押す
+    # カメラ設定 - 起動時に1回だけ押す
     logger.info(f"  カメラ設定: {'BLUE' if team_id == 100 else 'RED'}チームジャングラー")
     press_jungler_key(team_id)
 
