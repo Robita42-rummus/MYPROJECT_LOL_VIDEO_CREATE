@@ -239,20 +239,37 @@ class ReplayDownloader:
         # 新しい順にソート (age_hours 昇順 = 新しい順)
         results.sort(key=lambda r: r["age_hours"])
 
-        # 同一プレイヤーの試合は最新1件のみ残す
-        # (1日5件制限があるため、同じプレイヤーの複数試合は避ける)
-        seen_puuids: set = set()
-        deduped = []
+        # 同一プレイヤーの試合はスコア最高の1件のみ残す
+        # スコア = (kills + assists) / max(deaths, 1)
+        def _score(r: dict) -> float:
+            k = r.get("kills", 0)
+            d = r.get("deaths", 0)
+            a = r.get("assists", 0)
+            return (k + a) / max(d, 1)
+
+        from collections import defaultdict
+        player_matches: dict = defaultdict(list)
+        no_puuid = []
         for r in results:
             p = r.get("puuid", "")
-            if p and p in seen_puuids:
-                logger.debug(
-                    f"同一プレイヤーの重複試合をスキップ: {r.get('player')} ({r['match_id']})"
-                )
-                continue
             if p:
-                seen_puuids.add(p)
-            deduped.append(r)
+                player_matches[p].append(r)
+            else:
+                no_puuid.append(r)
+
+        deduped = []
+        for puuid, matches in player_matches.items():
+            best = max(matches, key=_score)
+            if len(matches) > 1:
+                skipped = [m["match_id"] for m in matches if m is not best]
+                logger.debug(
+                    f"同一プレイヤーの重複除去: {best.get('player')} → "
+                    f"{best['match_id']} (score={_score(best):.1f}) を選択, スキップ: {skipped}"
+                )
+            deduped.append(best)
+        deduped.extend(no_puuid)
+        deduped.sort(key=lambda r: r["age_hours"])  # 新しい順に再ソート
+
         if len(deduped) < len(results):
             logger.info(
                 f"同一プレイヤー重複除去: {len(results)} → {len(deduped)} 件"
