@@ -37,17 +37,17 @@ python -c "from src.youtube.quota_tracker import log_status; log_status()"
 
 パイプラインは `record_matches.py` → `create_thumbnails.py` → `upload_video.py` の3ステップ構成 (録画とアップロードは並行実行):
 
-1. **試合発見** — `src/lol/replay_downloader.py` の `find_downloadable_matches` が **Challenger + Grandmaster を LP 降順で合算した上位100人**を取得し、`PlayerTracker` でロール判定（キャッシュ活用）。**JUNGLEロールの選手**が24時間以内に勝利した試合を収集。条件: 現パッチ・ランクソロ(queue=420)・**15分以上**・**同一プレイヤーは最新1件のみ**。候補一覧は `cache/match_candidates.json` に試合日時順で保存。
+1. **試合発見** — `src/lol/replay_downloader.py` の `find_downloadable_matches` が **Challenger + Grandmaster を LP 降順で合算した上位100人**を取得し、`PlayerTracker` でロール判定（キャッシュ活用）。**JUNGLEロールの選手**が24時間以内に勝利した試合を収集。条件: 現パッチ・ランクソロ(queue=420)・**15分以上**・**同一プレイヤーはKDAスコア最高の1件のみ**（スコア = `(kills + assists) / max(deaths, 1)`）。候補一覧は `cache/match_candidates.json` に試合日時順で保存。**キャッシュ再利用**: `cache/match_candidates.json` が24時間以内かつ未完了試合が残っている場合、Riot APIを呼ばずキャッシュを再利用する（日次スナップショットもスキップ）。
 
 2. **プレイヤーロールキャッシュ** — `src/lol/player_tracker.py` が `cache/player_roles.json` に選手ごとのロールと**プレイヤー名**を保存。直近10試合の `teamPosition` 最頻値がロール。7日間有効、新規・期限切れのみ再判定。名前は日次スナップショット実行時に自動更新。
 
 3. **リプレイダウンロード** — `src/lol/replay_downloader.py` がLCU APIで `.rofl` ファイルをダウンロード。現パッチのリプレイのみ取得可能。
 
-4. **録画** — **OBSのみ使用** (`record_matches.py`)。OBS WebSocketでゲーム開始後〜終了まで録画（ローディング画面は録画しない）。AHKスクリプトでカメラをジャングラーに固定。MKV→MP4リマックス後、**YouTubeタイトルと同じファイル名にリネーム** (例: `[JP Challenger JG] Evelynn 7-2-3 - senzawa#JP1.mp4`)。メタデータは `{game_id}.json` のまま。録画完了時に `output/lol_matches.db` へ自動登録 (`video_filename` も記録)。
+4. **録画** — **OBSのみ使用** (`record_matches.py`)。OBS WebSocketでゲーム開始後〜終了まで録画（ローディング画面は録画しない）。**Interceptionドライバ**でカメラをジャングラーに固定（Win32 `AttachThreadInput`+`SetForegroundWindow` でLoLをアクティブ化後、カーネルレベルキー注入）。MKV→MP4リマックス後、**YouTubeタイトルと同じファイル名にリネーム** (例: `[JP Challenger JG] Evelynn 7-2-3 - senzawa#JP1.mp4`)。メタデータは `{game_id}.json` のまま。録画完了時に `output/lol_matches.db` へ自動登録 (`video_filename` も記録)。
 
 5. **サムネイル生成** — `create_thumbnails.py` が `output/videos/{game_id}.json` のメタデータから1280×720 JPEGを生成。`output/thumbnails/{game_id}.jpg`。
 
-6. **YouTube投稿** — `upload_video.py` / `src/youtube/uploader.py` がYouTube Data API v3 + OAuth2で動画をアップロード。クォータ残量を事前チェック（上限10,000units/日、1アップロード=1,600units）。`youtube_url` が登録済みの場合は重複アップロードをスキップ。アップロード完了後にDBへYouTube URL・status=uploadedを記録。
+6. **YouTube投稿** — `upload_video.py` / `src/youtube/uploader.py` がYouTube Data API v3 + OAuth2で動画をアップロード。クォータ残量を事前チェック（上限10,000units/日、1アップロード=1,600units）。`youtube_url` が登録済みの場合は重複アップロードをスキップ。サムネイルが未生成の場合は自動生成してから投稿。アップロード完了後にDBへYouTube URL・status=uploadedを記録。`main.py` 終了時にアップロード未完了の試合があれば手動コマンドをログに表示。
 
 7. **試合リスト** — `output/lol_matches.db` (SQLite) がメイン。書き込みのたびに `output/match_list.csv` へ自動エクスポート（Excel閲覧用）。`match_list.py` で表示・再構築。
 
@@ -76,8 +76,7 @@ python -c "from src.youtube.quota_tracker import log_status; log_status()"
 | `cleanup.py` | アップロード済み動画の自動削除スクリプト |
 | `credentials/youtube_client_secret.json` | YouTube OAuth2クライアントシークレット (要配置) |
 | `credentials/youtube_token.json` | YouTube OAuth2トークン (初回認証後に自動生成) |
-| `press_key2.ahk` | AHK: ブルーチームジャングラーにカメラ固定 (キー「2」×2) |
-| `press_keyw.ahk` | AHK: レッドチームジャングラーにカメラ固定 (キー「W」×2) |
+| `record_matches.py` | Interceptionドライバによるカメラ固定ロジック含む (`_activate_lol`, `_send_key`, `press_jungler_key`) |
 
 ### lol_matches.db / match_list.csv のカラム構成
 
@@ -114,7 +113,10 @@ python -c "from src.youtube.quota_tracker import log_status; log_status()"
 
 ## 1.5. 重要な制約事項
 
-**カメラ操作**: AHKが唯一の確実な方法。`SendInput`/VKコードはDirectXゲームでは効かない。`cameraMode=focus/tps` は**ゲームクラッシュ**するため使用禁止。
+**カメラ操作**: **Interceptionドライバが唯一の確実な方法**。AHK・`SendInput`・VKコードは全画面DirectXゲームでは完全に無効。`cameraMode=focus/tps` は**ゲームクラッシュ**するため使用禁止。
+- キー注入前に必ず `_activate_lol()` でLoLをフォアグラウンドに持ってくること（Win32 `AttachThreadInput`+`SetForegroundWindow`）
+- スキャンコード: ブルーJG=`0x03`(キー「2」)、レッドJG=`0x11`(キー「W」)、スコアボード=`0x18`(キー「O」)
+- Interceptionが使えない場合は `_INTERCEPTION_OK=False` にフォールバック（カメラ固定なし）
 
 **音声録音**: pyaudiowpatch WASAPIループバックのみ動作。`soundcard` ライブラリはexit=127でクラッシュするため使用不可。
 
